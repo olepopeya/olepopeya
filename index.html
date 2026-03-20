@@ -26,6 +26,272 @@
 <body>
   <canvas id="canvas"></canvas>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
-  <script src="app.js"></script>
+  <script>
+// Ragdoll Physics App
+(function () {
+  const { Engine, Render, Runner, Bodies, Body, Composite, Constraint, Mouse, MouseConstraint, Events } = Matter;
+
+  const canvas = document.getElementById('canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+
+  // Engine
+  const engine = Engine.create();
+  engine.gravity.y = 1.5;
+
+  // Renderer
+  const render = Render.create({
+    canvas: canvas,
+    engine: engine,
+    options: {
+      width: W * dpr,
+      height: H * dpr,
+      pixelRatio: 1,
+      background: '#000000',
+      wireframes: false,
+      showAngleIndicator: false,
+    }
+  });
+
+  // Scale factor for different screen sizes
+  const S = Math.min(W, H) / 400;
+
+  // --- Walls ---
+  const wallOpts = { isStatic: true, render: { fillStyle: '#000', strokeStyle: '#000', lineWidth: 0 } };
+  const walls = [
+    Bodies.rectangle(W / 2, H + 25, W + 100, 50, wallOpts),   // floor
+    Bodies.rectangle(-25, H / 2, 50, H + 100, wallOpts),       // left
+    Bodies.rectangle(W + 25, H / 2, 50, H + 100, wallOpts),    // right
+  ];
+
+  // --- Ragdoll ---
+  const cx = W / 2;
+  const ragdollTop = H * 0.32;
+
+  const bodyColor = '#d0d0d0';
+  const jointStiffness = 0.6;
+  const bodyOpts = {
+    friction: 0.5,
+    restitution: 0.15,
+    density: 0.002,
+    render: { fillStyle: bodyColor, strokeStyle: '#b0b0b0', lineWidth: 1 }
+  };
+
+  // Head
+  const headR = 22 * S;
+  const head = Bodies.circle(cx, ragdollTop, headR, { ...bodyOpts, density: 0.003 });
+
+  // Torso (upper)
+  const torsoW = 36 * S, torsoH = 40 * S;
+  const torsoY = ragdollTop + headR + torsoH / 2 + 4 * S;
+  const torso = Bodies.rectangle(cx, torsoY, torsoW, torsoH, { ...bodyOpts, chamfer: { radius: 8 * S } });
+
+  // Belly
+  const bellyW = 32 * S, bellyH = 30 * S;
+  const bellyY = torsoY + torsoH / 2 + bellyH / 2 - 2 * S;
+  const belly = Bodies.rectangle(cx, bellyY, bellyW, bellyH, { ...bodyOpts, chamfer: { radius: 10 * S } });
+
+  // Upper arms
+  const armW = 18 * S, armH = 10 * S;
+  const lUpperArm = Bodies.ellipse(cx - torsoW / 2 - armW / 2, torsoY - torsoH * 0.25, armW / 2, armH / 2, bodyOpts);
+  const rUpperArm = Bodies.ellipse(cx + torsoW / 2 + armW / 2, torsoY - torsoH * 0.25, armW / 2, armH / 2, bodyOpts);
+
+  // Lower arms (hands)
+  const handW = 14 * S, handH = 8 * S;
+  const lHand = Bodies.ellipse(cx - torsoW / 2 - armW - handW / 2 + 2 * S, torsoY - torsoH * 0.2, handW / 2, handH / 2, bodyOpts);
+  const rHand = Bodies.ellipse(cx + torsoW / 2 + armW + handW / 2 - 2 * S, torsoY - torsoH * 0.2, handW / 2, handH / 2, bodyOpts);
+
+  // Upper legs
+  const legW = 10 * S, legH = 22 * S;
+  const lUpperLeg = Bodies.ellipse(cx - 8 * S, bellyY + bellyH / 2 + legH / 2, legW / 2, legH / 2, bodyOpts);
+  const rUpperLeg = Bodies.ellipse(cx + 8 * S, bellyY + bellyH / 2 + legH / 2, legW / 2, legH / 2, bodyOpts);
+
+  // Lower legs
+  const lLowerLeg = Bodies.ellipse(cx - 8 * S, bellyY + bellyH / 2 + legH + legH / 2 - 2 * S, legW / 2, legH / 2, bodyOpts);
+  const rLowerLeg = Bodies.ellipse(cx + 8 * S, bellyY + bellyH / 2 + legH + legH / 2 - 2 * S, legW / 2, legH / 2, bodyOpts);
+
+  // Feet
+  const footW = 14 * S, footH = 8 * S;
+  const lFoot = Bodies.ellipse(cx - 8 * S, bellyY + bellyH / 2 + legH * 2 + footH / 2 - 2 * S, footW / 2, footH / 2, bodyOpts);
+  const rFoot = Bodies.ellipse(cx + 8 * S, bellyY + bellyH / 2 + legH * 2 + footH / 2 - 2 * S, footW / 2, footH / 2, bodyOpts);
+
+  const ragdollParts = [head, torso, belly, lUpperArm, rUpperArm, lHand, rHand, lUpperLeg, rUpperLeg, lLowerLeg, rLowerLeg, lFoot, rFoot];
+
+  // --- Joints ---
+  function joint(bodyA, bodyB, pA, pB, stiff, len) {
+    return Constraint.create({
+      bodyA, bodyB,
+      pointA: pA,
+      pointB: pB,
+      stiffness: stiff || jointStiffness,
+      damping: 0.3,
+      length: len || 0,
+      render: { visible: false }
+    });
+  }
+
+  const joints = [
+    // Neck
+    joint(head, torso, { x: 0, y: headR * 0.7 }, { x: 0, y: -torsoH / 2 }, 0.8, 4 * S),
+    // Torso-belly
+    joint(torso, belly, { x: 0, y: torsoH / 2 }, { x: 0, y: -bellyH / 2 }, 0.8, 0),
+    // Shoulders
+    joint(torso, lUpperArm, { x: -torsoW / 2, y: -torsoH * 0.25 }, { x: armW / 2, y: 0 }, 0.4, 2 * S),
+    joint(torso, rUpperArm, { x: torsoW / 2, y: -torsoH * 0.25 }, { x: -armW / 2, y: 0 }, 0.4, 2 * S),
+    // Elbows
+    joint(lUpperArm, lHand, { x: -armW / 2, y: 0 }, { x: handW / 2, y: 0 }, 0.3, 2 * S),
+    joint(rUpperArm, rHand, { x: armW / 2, y: 0 }, { x: -handW / 2, y: 0 }, 0.3, 2 * S),
+    // Hips
+    joint(belly, lUpperLeg, { x: -8 * S, y: bellyH / 2 }, { x: 0, y: -legH / 2 }, 0.5, 2 * S),
+    joint(belly, rUpperLeg, { x: 8 * S, y: bellyH / 2 }, { x: 0, y: -legH / 2 }, 0.5, 2 * S),
+    // Knees
+    joint(lUpperLeg, lLowerLeg, { x: 0, y: legH / 2 }, { x: 0, y: -legH / 2 }, 0.5, 2 * S),
+    joint(rUpperLeg, rLowerLeg, { x: 0, y: legH / 2 }, { x: 0, y: -legH / 2 }, 0.5, 2 * S),
+    // Ankles
+    joint(lLowerLeg, lFoot, { x: 0, y: legH / 2 }, { x: 0, y: -footH / 2 }, 0.4, 2 * S),
+    joint(rLowerLeg, rFoot, { x: 0, y: legH / 2 }, { x: 0, y: -footH / 2 }, 0.4, 2 * S),
+  ];
+
+  // --- Rope from top of screen to head ---
+  const ropeAnchorY = 0;
+  const ropeLength = ragdollTop - headR - ropeAnchorY;
+
+  // Rope segments for visual + physics
+  const ropeSegments = 8;
+  const segLen = ropeLength / ropeSegments;
+  const ropeBodies = [];
+  const ropeConstraints = [];
+
+  for (let i = 0; i < ropeSegments; i++) {
+    const seg = Bodies.circle(cx, ropeAnchorY + segLen * (i + 0.5), 2 * S, {
+      density: 0.0005,
+      friction: 0.3,
+      render: { visible: false },
+      collisionFilter: { group: -1 }
+    });
+    ropeBodies.push(seg);
+  }
+
+  // Pin top of rope to screen top
+  ropeConstraints.push(Constraint.create({
+    pointA: { x: cx, y: ropeAnchorY },
+    bodyB: ropeBodies[0],
+    pointB: { x: 0, y: -segLen / 2 },
+    stiffness: 0.9,
+    damping: 0.2,
+    length: 0,
+    render: { visible: false }
+  }));
+
+  // Connect rope segments
+  for (let i = 0; i < ropeSegments - 1; i++) {
+    ropeConstraints.push(Constraint.create({
+      bodyA: ropeBodies[i],
+      pointA: { x: 0, y: segLen / 2 },
+      bodyB: ropeBodies[i + 1],
+      pointB: { x: 0, y: -segLen / 2 },
+      stiffness: 0.9,
+      damping: 0.2,
+      length: 0,
+      render: { visible: false }
+    }));
+  }
+
+  // Connect rope end to head
+  ropeConstraints.push(Constraint.create({
+    bodyA: ropeBodies[ropeSegments - 1],
+    pointA: { x: 0, y: segLen / 2 },
+    bodyB: head,
+    pointB: { x: 0, y: -headR * 0.8 },
+    stiffness: 0.9,
+    damping: 0.2,
+    length: 0,
+    render: { visible: false }
+  }));
+
+  // Set collision filter for ragdoll so rope doesn't collide with it
+  ragdollParts.forEach(p => {
+    p.collisionFilter = { ...p.collisionFilter, group: -1 };
+  });
+
+  // --- Cube ---
+  const cubeSize = 70 * S;
+  const cubeY = bellyY + bellyH / 2 + legH * 2 + footH + cubeSize / 2 + 4 * S;
+  const cube = Bodies.rectangle(cx, cubeY, cubeSize, cubeSize, {
+    friction: 0.8,
+    restitution: 0.1,
+    density: 0.005,
+    render: { fillStyle: '#ff0000', strokeStyle: '#cc0000', lineWidth: 2 }
+  });
+
+  // --- Add everything ---
+  Composite.add(engine.world, [
+    ...walls,
+    ...ragdollParts,
+    ...joints,
+    ...ropeBodies,
+    ...ropeConstraints,
+    cube,
+  ]);
+
+  // --- Mouse / Touch control ---
+  const mouse = Mouse.create(canvas);
+  mouse.pixelRatio = dpr;
+
+  const mouseConstraint = MouseConstraint.create(engine, {
+    mouse: mouse,
+    constraint: {
+      stiffness: 0.2,
+      damping: 0.1,
+      render: { visible: false }
+    }
+  });
+
+  Composite.add(engine.world, mouseConstraint);
+  render.mouse = mouse;
+
+  // --- Custom rope rendering ---
+  Events.on(render, 'afterRender', function () {
+    const ctx = render.context;
+
+    // Draw rope as a smooth yellow line
+    ctx.beginPath();
+    ctx.moveTo(cx * dpr, ropeAnchorY * dpr);
+
+    for (let i = 0; i < ropeBodies.length; i++) {
+      ctx.lineTo(ropeBodies[i].position.x * dpr, ropeBodies[i].position.y * dpr);
+    }
+    ctx.lineTo(head.position.x * dpr, (head.position.y - headR * 0.8) * dpr);
+
+    ctx.strokeStyle = '#e8c820';
+    ctx.lineWidth = 3 * dpr;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Draw a small yellow collar circle around neck area
+    const neckX = (head.position.x) * dpr;
+    const neckY = (head.position.y + headR * 0.6) * dpr;
+    ctx.beginPath();
+    ctx.arc(neckX, neckY, 6 * S * dpr, 0, Math.PI, false);
+    ctx.strokeStyle = '#e8c820';
+    ctx.lineWidth = 2.5 * dpr;
+    ctx.stroke();
+  });
+
+  // --- Run ---
+  const runner = Runner.create();
+  Runner.run(runner, engine);
+  Render.run(render);
+
+  // --- Handle resize ---
+  window.addEventListener('resize', function () {
+    location.reload();
+  });
+})();
+  </script>
 </body>
 </html>
