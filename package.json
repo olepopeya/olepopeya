@@ -1,0 +1,16 @@
+{
+  "name": "olepopeya-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for the Olepopeya ragdoll physics app",
+  "type": "module",
+  "main": "src/server.js",
+  "bin": {
+    "olepopeya-mcp": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  }
+}
